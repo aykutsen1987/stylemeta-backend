@@ -41,7 +41,6 @@ async def try_on(
     result_path = f"{RESULT_DIR}/{uid}_result.jpg"
 
     try:
-        # Save uploads
         with open(person_path, "wb") as f:
             shutil.copyfileobj(person.file, f)
 
@@ -61,65 +60,46 @@ async def try_on(
             timeout=300
         )
 
-        print("HF STATUS:", response.status_code)
-        print("HF RESPONSE:", response.text)
-
+        # 🔴 HF ÇÖKTÜ / LOADING / HTML DÖNDÜ
         if response.status_code != 200:
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "status": "error",
-                    "message": "HuggingFace request failed",
-                    "detail": response.text
-                }
-            )
+            return {
+                "status": "loading",
+                "message": "AI model is starting, please retry",
+                "hf_status": response.status_code
+            }
 
-        result = response.json()
+        # 🔴 JSON DEĞİLSE
+        try:
+            result = response.json()
+        except Exception:
+            return {
+                "status": "loading",
+                "message": "HF returned non-JSON response"
+            }
 
-        # 🔴 HF boş / loading / rate-limit kontrolü
-        if (
-            "data" not in result
-            or not result["data"]
-            or result["data"][0] is None
-        ):
-            return JSONResponse(
-                status_code=202,
-                content={
-                    "status": "loading",
-                    "message": "Model is loading or returned empty result",
-                    "hf_response": result
-                }
-            )
+        if "data" not in result or not result["data"] or result["data"][0] is None:
+            return {
+                "status": "loading",
+                "message": "AI is warming up"
+            }
 
         image_data = result["data"][0]
 
         if "," not in image_data:
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "status": "error",
-                    "message": "Invalid image format from HF",
-                    "hf_response": result
-                }
-            )
+            return {
+                "status": "error",
+                "message": "Invalid image data"
+            }
 
         image_base64 = image_data.split(",")[1]
 
         with open(result_path, "wb") as f:
             f.write(base64.b64decode(image_base64))
 
-        return FileResponse(
-            result_path,
-            media_type="image/jpeg",
-            filename="result.jpg"
-        )
+        return FileResponse(result_path, media_type="image/jpeg")
 
     except Exception as e:
-        print("SERVER CRASH:", traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "crash",
-                "error": str(e)
-            }
-        )
+        return {
+            "status": "error",
+            "message": str(e)
+        }
