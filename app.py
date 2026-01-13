@@ -1,13 +1,9 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-import requests
-import os
-import uuid
-import shutil
-import base64
+import requests, os, uuid, shutil, base64
 
-app = FastAPI()   # 🔥 BU SATIR OLMAZSA BU HATA OLUR
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,23 +14,15 @@ app.add_middleware(
 
 UPLOAD_DIR = "uploads"
 RESULT_DIR = "results"
-
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
 
 def image_to_base64(path):
     with open(path, "rb") as img:
-        return base64.b64encode(img.read()).decode("utf-8")
-
-@app.get("/")
-def home():
-    return {"status": "StyleMeta backend running"}
+        return base64.b64encode(img.read()).decode()
 
 @app.post("/tryon")
-async def try_on(
-    person: UploadFile = File(...),
-    cloth: UploadFile = File(...)
-):
+async def try_on(person: UploadFile = File(...), cloth: UploadFile = File(...)):
     uid = str(uuid.uuid4())
 
     person_path = f"{UPLOAD_DIR}/{uid}_person.jpg"
@@ -54,15 +42,33 @@ async def try_on(
         ]
     }
 
-    response = requests.post(
-        "https://yisol-idm-vton.hf.space/run/predict",
-        json=payload,
-        timeout=300
-    )
+    try:
+        response = requests.post(
+            "https://yisol-idm-vton.hf.space/run/predict",
+            json=payload,
+            timeout=300
+        )
 
-    result_base64 = response.json()["data"][0].split(",")[1]
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"HF error: {response.text}"
+            )
 
-    with open(result_path, "wb") as f:
-        f.write(base64.b64decode(result_base64))
+        result = response.json()
 
-    return FileResponse(result_path, media_type="image/jpeg")
+        if "data" not in result:
+            raise HTTPException(
+                status_code=503,
+                detail=f"HF response invalid: {result}"
+            )
+
+        image_base64 = result["data"][0].split(",")[1]
+
+        with open(result_path, "wb") as f:
+            f.write(base64.b64decode(image_base64))
+
+        return FileResponse(result_path, media_type="image/jpeg")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
