@@ -16,6 +16,7 @@ app.add_middleware(
 
 SPACE_API_URL = "https://yisol-idm-vton.hf.space/run/predict"
 
+
 RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
 
