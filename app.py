@@ -14,7 +14,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SPACE_API_URL = "https://yisol-idm-vton.hf.space/run/predict"
+SPACE_API_URL = "https://cuuupid-idm-vton.hf.space/run/predict"
 
 
 RESULT_DIR = "results"
