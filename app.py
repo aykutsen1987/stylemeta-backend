@@ -45,3 +45,20 @@ async def try_on(
         SPACE_API_URL,
         json=payload,
         timeout=180
+    )
+
+    if response.status_code != 200:
+        return {"error": "AI processing failed"}
+
+    result_b64 = response.json()["data"][0]
+    result_bytes = base64.b64decode(result_b64)
+
+    uid = str(uuid.uuid4())
+    result_path = f"{RESULT_DIR}/{uid}.jpg"
+
+    with open(result_path, "wb") as f:
+        f.write(result_bytes)
+
+    return {
+        "result_url": f"/results/{uid}.jpg"
+    }
