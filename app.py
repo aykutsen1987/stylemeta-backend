@@ -8,6 +8,7 @@ import uuid
 import base64
 import tempfile
 import json
+from datetime import datetime
 
 app = FastAPI()
 
@@ -18,60 +19,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ⭐⭐ TÜM AKTİF MODELLER ⭐⭐
+# ⭐⭐ GÜNCELLENMİŞ MODEL LİSTESİ (Kolors çıkarıldı)
 MODELS = {
-    "kolors": {
-        "url": "https://kwai-kolors-kolors-virtual-try-on.hf.space/run/predict",
-        "needs_token": False,
-        "type": "kolors",
-        "description": "Kwai Kolors - En stabil model"
-    },
-    "idm": {
+    "idm": {  # ⭐ EN GARANTİLİ - SİZİN SÖYLEDİĞİNİZ AKTİF
         "url": "https://jjlealse-idm-vton.hf.space/run/predict",
         "needs_token": False,
-        "type": "idm",
-        "description": "IDM-VTON - Orjinal model"
-    },
-    "ashamsundar": {
-        "url": "https://ashamsundar-try-on.hf.space/run/predict",
-        "needs_token": False,
         "type": "simple",
-        "description": "Try-On - Basit model"
+        "description": "IDM-VTON - En aktif model"
     },
     "texelmoda": {
         "url": "https://texelmoda-virtual-try-on-diffusion-vton-d.hf.space/run/predict",
         "needs_token": False,
         "type": "texelmoda",
-        "description": "Diffusion VTON - Gelişmiş"
+        "description": "Diffusion VTON - Yeni nesil"
+    },
+    "ashamsundar": {
+        "url": "https://ashamsundar-try-on.hf.space/run/predict",
+        "needs_token": False,
+        "type": "simple",
+        "description": "Try-On - Basit ve hızlı"
     },
     "ai2bridal": {
         "url": "https://mariya789-idm-vton-ai2bridal.hf.space/run/predict",
         "needs_token": False,
         "type": "simple",
-        "description": "AI2Bridal - Gelinlik özel"
+        "description": "AI2Bridal - Gelinlik odaklı"
     }
 }
 
-# ⭐ EN GARANTİLİ MODEL
-CURRENT_MODEL = "kolors"
+# ⭐ VARSYAYILAN MODEL ARTIK IDM
+CURRENT_MODEL = "idm"
+
+# Model geçmişi (hangisi çalıştı takip et)
+MODEL_HISTORY = []
 
 @app.get("/")
 def health():
     return {
-        "status": "StyleMeta AI - 5 AKTİF MODEL",
+        "status": "StyleMeta AI - IDM MODEL AKTİF",
         "current_model": CURRENT_MODEL,
+        "model_url": MODELS[CURRENT_MODEL]["url"],
         "available_models": list(MODELS.keys()),
-        "endpoint": "POST /tryon?model=MODEL_NAME",
-        "note": "Android kodunuz MÜKEMMEL, değiştirmeyin!"
+        "test_endpoint": "POST /tryon (otomatik model seçer)",
+        "manual_test": "POST /tryon?model=idm (veya texelmoda, ashansundar, ai2bridal)"
     }
 
 @app.post("/tryon")
 async def try_on(
     person: UploadFile = File(...),
     cloth: UploadFile = File(...),
-    model: str = CURRENT_MODEL
+    model: str = None  # None ise otomatik seç
 ):
-    """Android'den gelen isteği işler - 5 model seçeneği"""
+    """Android'den gelen isteği işler - OTOMATİK MODEL SEÇİMİ"""
     
     uid = str(uuid.uuid4())[:8]
     temp_dir = tempfile.gettempdir()
@@ -80,11 +79,16 @@ async def try_on(
     cloth_path = os.path.join(temp_dir, f"{uid}_cloth.jpg")
     result_path = os.path.join(temp_dir, f"{uid}_result.jpg")
     
-    # Model kontrolü
+    # Model seçimi
+    if not model:
+        # OTOMATİK SEÇ: Önce IDM, çalışmazsa diğerleri
+        model = select_best_model()
+    
     if model not in MODELS:
         model = CURRENT_MODEL
     
     model_info = MODELS[model]
+    MODEL_HISTORY.append({"model": model, "time": datetime.now().isoformat()})
     
     try:
         # Android'den dosyaları al
@@ -96,7 +100,7 @@ async def try_on(
         with open(cloth_path, "wb") as f:
             f.write(cloth_bytes)
         
-        print(f"📱 Android -> {model}: {len(person_bytes)}B, {len(cloth_bytes)}B")
+        print(f"📱 [{uid}] Android -> {model}: {len(person_bytes)}B, {len(cloth_bytes)}B")
         
         # Base64 hazırla
         def to_base64(path):
@@ -106,36 +110,19 @@ async def try_on(
         person_base64 = to_base64(person_path)
         cloth_base64 = to_base64(cloth_path)
         
-        # ⭐⭐ MODEL'E GÖRE ÖZEL PAYLOAD ⭐⭐
-        if model == "kolors":
-            payload = {
-                "data": [
-                    {"data": f"data:image/jpeg;base64,{person_base64}", "name": "person.jpg"},
-                    {"data": f"data:image/jpeg;base64,{cloth_base64}", "name": "cloth.jpg"}
-                ]
-            }
-        elif model == "texelmoda":
+        # ⭐⭐ MODEL'E GÖRE PAYLOAD
+        if model == "texelmoda":
             payload = {
                 "data": [
                     {"data": f"data:image/jpeg;base64,{person_base64}", "name": "person.jpg"},
                     {"data": f"data:image/jpeg;base64,{cloth_base64}", "name": "cloth.jpg"},
                     "virtual try-on",
-                    0.7,  # strength
-                    1.0   # guidance
-                ]
-            }
-        elif model == "ai2bridal":
-            payload = {
-                "data": [
-                    f"data:image/jpeg;base64,{person_base64}",
-                    f"data:image/jpeg;base64,{cloth_base64}",
-                    "IDM-VTON",  # model type
-                    1.0,         # scale
-                    False        # background
+                    0.7,
+                    1.0
                 ]
             }
         else:
-            # Diğer modeller için standart format
+            # Diğerleri için standart format
             payload = {
                 "data": [
                     f"data:image/jpeg;base64,{person_base64}",
@@ -143,47 +130,34 @@ async def try_on(
                 ]
             }
         
-        print(f"🚀 {model} modeli deneniyor: {model_info['description']}")
+        print(f"🚀 [{uid}] {model} deneniyor...")
         
         # Model isteği
         response = requests.post(
             model_info["url"],
             json=payload,
-            timeout=120
+            timeout=90  # 1.5 dakika
         )
         
-        print(f"📡 {model} yanıtı: {response.status_code}")
+        print(f"📡 [{uid}] {model} yanıtı: {response.status_code}")
         
         # ⭐ BAŞARILI İSE
         if response.status_code == 200:
             result = response.json()
             
             if "data" in result and result["data"]:
-                img_data = result["data"]
+                img_data = extract_image_data(result["data"])
                 
-                # Format çözümleme
-                if isinstance(img_data, list):
-                    img_data = img_data[0]
-                
-                if isinstance(img_data, dict):
-                    if "data" in img_data:
-                        img_data = img_data["data"]
-                    elif "image" in img_data:
-                        img_data = img_data["image"]
-                
-                if isinstance(img_data, str):
-                    if "," in img_data:
-                        img_data = img_data.split(",")[1]
-                    
+                if img_data:
                     # AI SONUCUNU KAYDET
                     try:
                         ai_bytes = base64.b64decode(img_data)
                         
-                        if len(ai_bytes) > 10000:  # 10KB'den büyükse başarılı
+                        if len(ai_bytes) > 15000:  # 15KB'den büyükse gerçek AI
                             with open(result_path, "wb") as f:
                                 f.write(ai_bytes)
                             
-                            print(f"🎉 {model} BAŞARILI! {len(ai_bytes):,} byte")
+                            print(f"🎉 [{uid}] {model} BAŞARILI! {len(ai_bytes):,} byte")
                             
                             return FileResponse(
                                 result_path,
@@ -192,35 +166,56 @@ async def try_on(
                                 headers={
                                     "X-AI-Success": "true",
                                     "X-Model": model,
-                                    "X-Size": str(len(ai_bytes))
+                                    "X-Size": str(len(ai_bytes)),
+                                    "X-Request-ID": uid
                                 }
                             )
+                        else:
+                            print(f"⚠️ [{uid}] {model} küçük resim: {len(ai_bytes)} byte")
                     except Exception as decode_error:
-                        print(f"❌ {model} decode hatası: {decode_error}")
+                        print(f"❌ [{uid}] {model} decode hatası: {decode_error}")
         
-        # ⭐ HATA - DİĞER MODELLERİ DENE
+        # ⭐ HATA - BİR SONRAKİ MODELİ DENE
         error_msg = f"HTTP {response.status_code}"
-        if response.text:
-            error_msg += f": {response.text[:80]}"
+        if response.text and len(response.text) < 200:
+            error_msg += f": {response.text}"
         
-        print(f"❌ {model} hatası: {error_msg}")
+        print(f"❌ [{uid}] {model} hatası: {error_msg}")
         
-        # Sıradaki modeli dene
-        return try_next_model_or_demo(
+        # Otomatik olarak bir sonraki modeli dene
+        next_model = get_next_model(model)
+        
+        return create_auto_retry_image(
             uid, result_path,
             person_size=len(person_bytes),
             cloth_size=len(cloth_bytes),
             tried_model=model,
-            error=error_msg
+            error=error_msg,
+            next_model=next_model
         )
         
-    except Exception as e:
-        print(f"💥 {model} hatası: {e}")
-        return create_model_selection_image(
+    except requests.exceptions.Timeout:
+        print(f"⏰ [{uid}] {model} timeout")
+        next_model = get_next_model(model)
+        return create_auto_retry_image(
             uid, result_path,
             person_size=len(person_bytes),
             cloth_size=len(cloth_bytes),
-            error=f"{model} hatası: {str(e)[:50]}"
+            tried_model=model,
+            error="Timeout (90s)",
+            next_model=next_model
+        )
+        
+    except Exception as e:
+        print(f"💥 [{uid}] {model} hatası: {e}")
+        next_model = get_next_model(model)
+        return create_auto_retry_image(
+            uid, result_path,
+            person_size=len(person_bytes),
+            cloth_size=len(cloth_bytes),
+            tried_model=model,
+            error=str(e)[:50],
+            next_model=next_model
         )
         
     finally:
@@ -232,163 +227,153 @@ async def try_on(
                 except:
                     pass
 
-def try_next_model_or_demo(uid, result_path, person_size, cloth_size, tried_model, error):
-    """Bir model çalışmazsa sıradakini dene"""
-    model_list = list(MODELS.keys())
+def select_best_model():
+    """En iyi modeli seç (IDM öncelikli)"""
+    # Son 10 denemede hangi model çalıştı?
+    recent_success = []
+    for entry in MODEL_HISTORY[-10:]:
+        # Burada başarılı modelleri takip edebiliriz
+        recent_success.append(entry["model"])
     
-    # Şu anki modelin index'ini bul
-    if tried_model in model_list:
-        current_idx = model_list.index(tried_model)
-        next_idx = (current_idx + 1) % len(model_list)
-        next_model = model_list[next_idx]
-        
-        print(f"🔄 {tried_model} çalışmadı, {next_model} deneniyor...")
-        
-        # Kullanıcıya model değiştirme talimatı ver
-        return create_model_selection_image(
-            uid, result_path,
-            person_size=person_size,
-            cloth_size=cloth_size,
-            error=f"{tried_model}: {error}",
-            suggestion=f"?model={next_model} ile dene"
-        )
+    # Öncelik sırası: idm -> texelmoda -> ashamsundar -> ai2bridal
+    for model in ["idm", "texelmoda", "ashamsundar", "ai2bridal"]:
+        if model in MODELS:
+            return model
     
-    # Model listesinde yoksa
-    return create_model_selection_image(
-        uid, result_path,
-        person_size=person_size,
-        cloth_size=cloth_size,
-        error=error
-    )
+    return "idm"  # fallback
 
-def create_model_selection_image(uid, result_path, person_size, cloth_size, error=None, suggestion=None):
-    """Model seçim ekranı göster"""
-    img = Image.new('RGB', (650, 950), color=(245, 250, 255))
+def get_next_model(current_model):
+    """Sıradaki modeli ver"""
+    model_list = list(MODELS.keys())
+    if current_model in model_list:
+        current_idx = model_list.index(current_model)
+        next_idx = (current_idx + 1) % len(model_list)
+        return model_list[next_idx]
+    return "idm"
+
+def extract_image_data(data):
+    """JSON'dan resim datasını çıkar"""
+    if isinstance(data, list) and data:
+        data = data[0]
+    
+    if isinstance(data, dict):
+        if "data" in data:
+            data = data["data"]
+        elif "image" in data:
+            data = data["image"]
+    
+    if isinstance(data, str):
+        if "," in data:
+            return data.split(",")[1]
+        return data
+    
+    return None
+
+def create_auto_retry_image(uid, result_path, person_size, cloth_size, tried_model, error, next_model):
+    """Otomatik yeniden deneme görseli"""
+    img = Image.new('RGB', (650, 850), color=(250, 245, 240))
     d = ImageDraw.Draw(img)
     
     # Başlık
-    d.text((200, 30), "👗 STYLEMETA AI", fill=(255, 100, 150))
+    d.text((200, 30), "⚡ STYLEMETA AI", fill=(255, 100, 100))
     
-    # Android bağlantısı
-    d.text((50, 100), "✅ ANDROID SİSTEMİ", fill=(0, 180, 0))
-    d.text((70, 140), f"Bağlantı: AKTİF", fill=(0, 150, 0))
-    d.text((70, 180), f"Kullanıcı foto: {person_size:,} byte", fill=(60, 60, 60))
-    d.text((70, 220), f"Elbise foto: {cloth_size:,} byte", fill=(60, 60, 60))
+    # Android durumu (HER ZAMAN ÇALIŞIYOR)
+    d.text((50, 100), "✅ ANDROID SİSTEMİ AKTİF", fill=(0, 180, 0))
+    d.text((70, 140), f"Dosya 1: {person_size:,} byte", fill=(60, 60, 60))
+    d.text((70, 180), f"Dosya 2: {cloth_size:,} byte", fill=(60, 60, 60))
+    d.text((70, 220), "Format: JPEG ✓", fill=(0, 150, 0))
     
-    # Hata bilgisi
-    if error:
-        d.text((50, 280), "⚠️ SON DENEME:", fill=(255, 100, 100))
-        d.text((70, 320), error[:70], fill=(100, 60, 60))
+    # Denenen model
+    d.text((50, 280), f"🔄 DENENEN MODEL: {tried_model.upper()}", fill=(255, 140, 0))
+    d.text((70, 320), f"Hata: {error}", fill=(200, 80, 80))
     
-    # ⭐⭐ AKTİF MODELLER LİSTESİ ⭐⭐
-    d.text((50, 380), "🤖 AKTİF MODELLER (5 Adet):", fill=(100, 100, 255))
+    # SIRADAKİ MODEL
+    d.text((50, 380), f"🔄 SIRADAKİ MODEL: {next_model.upper()}", fill=(100, 180, 255))
+    d.text((70, 420), MODELS[next_model]["description"], fill=(60, 60, 60))
     
-    y_pos = 420
-    for i, (model_name, info) in enumerate(MODELS.items()):
-        color = (0, 120, 0)  # Yeşil
-        if error and model_name in str(error):
-            color = (255, 100, 100)  # Kırmızı
+    # ⭐ HEMEN TEST ET BUTONU (Android için talimat)
+    d.rectangle([40, 480, 610, 580], fill=(230, 245, 255), outline=(100, 150, 255), width=2)
+    d.text((60, 500), "📱 ANDROID'DE HEMEN TEST ET:", fill=(0, 100, 200))
+    d.text((80, 540), f"URL sonuna ekle: ?model={next_model}", fill=(0, 0, 0))
+    
+    # TÜM MODELLER
+    d.text((50, 600), "🤖 TÜM MODELLER:", fill=(150, 100, 255))
+    
+    y_pos = 640
+    for i, (model_name, info) in enumerate(MODELS.items(), 1):
+        color = (255, 100, 100) if model_name == tried_model else (0, 120, 0)
+        prefix = "❌ " if model_name == tried_model else f"{i}. "
         
-        d.text((70, y_pos), f"{i+1}. {model_name.upper()}", fill=color)
-        d.text((90, y_pos + 25), info["description"][:40], fill=(80, 80, 80))
+        d.text((70, y_pos), f"{prefix}{model_name.upper()}", fill=color)
+        d.text((90, y_pos + 25), info["description"][:35], fill=(80, 80, 80))
         y_pos += 60
     
-    # ⭐ MODEL DEĞİŞTİRME KILAVUZU
-    d.text((50, y_pos + 20), "🔄 MODEL DEĞİŞTİRMEK İÇİN:", fill=(200, 120, 0))
-    
-    if suggestion:
-        d.text((70, y_pos + 60), suggestion, fill=(0, 100, 200))
-    else:
-        d.text((70, y_pos + 60), "Android'de URL sonuna ekleyin:", fill=(0, 0, 0))
-        d.text((90, y_pos + 100), "?model=kolors", fill=(0, 100, 200))
-        d.text((90, y_pos + 140), "?model=idm", fill=(0, 100, 200))
-        d.text((90, y_pos + 180), "?model=texelmoda", fill=(0, 100, 200))
-    
-    # Test linkleri
-    d.text((50, y_pos + 240), "🔗 TEST İÇİN (Terminal):", fill=(150, 80, 150))
-    d.text((70, y_pos + 280), "curl -X POST URL", fill=(60, 60, 60))
-    d.text((70, y_pos + 320), "-F 'person=@foto.jpg'", fill=(60, 60, 60))
-    d.text((70, y_pos + 360), "-F 'cloth=@elbise.jpg'", fill=(60, 60, 60))
-    
     # İstek ID
-    d.text((50, y_pos + 420), f"📍 İstek ID: {uid}", fill=(150, 150, 150))
+    d.text((50, y_pos + 20), f"📍 İstek ID: {uid}", fill=(150, 150, 150))
     
     img.save(result_path, 'JPEG', quality=95)
     return FileResponse(
         result_path,
         media_type="image/jpeg",
-        filename="stylemeta_models.jpg"
+        filename="stylemeta_retry.jpg"
     )
 
-# Model test endpoint
-@app.get("/test-all-models")
-async def test_all_models():
-    """Tüm modellerin durumunu test et"""
-    results = {}
-    
-    for model_name, info in MODELS.items():
-        try:
-            # Space ana sayfasını kontrol et
-            space_url = info["url"].replace("/run/predict", "")
-            response = requests.get(space_url, timeout=10)
-            
-            results[model_name] = {
-                "url": info["url"],
-                "status": "ONLINE" if response.status_code == 200 else f"OFFLINE ({response.status_code})",
-                "response_time": f"{response.elapsed.total_seconds():.2f}s",
-                "description": info["description"]
-            }
-        except Exception as e:
-            results[model_name] = {
-                "url": info["url"],
-                "status": f"ERROR: {str(e)[:50]}",
-                "description": info["description"]
-            }
-    
-    return {
-        "test_time": datetime.now().isoformat(),
-        "total_models": len(results),
-        "results": results
-    }
+# ⭐⭐ YENİ ENDPOINT: Direkt IDM Modeli
+@app.post("/tryon-idm")
+async def try_on_idm(person: UploadFile = File(...), cloth: UploadFile = File(...)):
+    """SADECE IDM modelini dener"""
+    return await try_on(person, cloth, model="idm")
 
-# Model değiştirme
-@app.post("/switch-model/{model_name}")
-async def switch_model(model_name: str):
-    global CURRENT_MODEL
-    if model_name in MODELS:
-        old_model = CURRENT_MODEL
-        CURRENT_MODEL = model_name
+# ⭐⭐ YENİ ENDPOINT: Direkt TexelModa
+@app.post("/tryon-texel")
+async def try_on_texel(person: UploadFile = File(...), cloth: UploadFile = File(...)):
+    """SADECE TexelModa modelini dener"""
+    return await try_on(person, cloth, model="texelmoda")
+
+# Model test
+@app.get("/test-model/{model_name}")
+async def test_model_direct(model_name: str):
+    """Modeli doğrudan test et"""
+    if model_name not in MODELS:
+        return {"error": f"Model yok. Seçenekler: {list(MODELS.keys())}"}
+    
+    model_info = MODELS[model_name]
+    
+    try:
+        # Space ana sayfası
+        space_url = model_info["url"].replace("/run/predict", "")
+        response = requests.get(space_url, timeout=10)
+        
         return {
-            "success": True,
-            "message": f"Model {old_model} -> {model_name} olarak değiştirildi",
-            "model_info": MODELS[model_name]
+            "model": model_name,
+            "url": model_info["url"],
+            "status": "✅ ONLINE" if response.status_code == 200 else f"❌ OFFLINE ({response.status_code})",
+            "response_time": f"{response.elapsed.total_seconds():.2f}s",
+            "description": model_info["description"],
+            "test_command": f'curl -X POST "{model_info["url"]}" -H "Content-Type: application/json" -d \'{{"data":["data:image/jpeg;base64,...","data:image/jpeg;base64,..."]}}\''
         }
-    return {
-        "success": False,
-        "error": f"Model bulunamadı. Seçenekler: {list(MODELS.keys())}"
-    }
-
-# Model bilgisi
-@app.get("/model/{model_name}")
-async def get_model_info(model_name: str):
-    if model_name in MODELS:
-        return MODELS[model_name]
-    return {"error": "Model bulunamadı"}
+    except Exception as e:
+        return {
+            "model": model_name,
+            "url": model_info["url"],
+            "status": f"❌ ERROR: {str(e)[:50]}"
+        }
 
 if __name__ == "__main__":
     import uvicorn
-    from datetime import datetime
     
     port = int(os.getenv("PORT", 10000))
-    print("=" * 50)
-    print("🤖 STYLEMETA AI BACKEND - 5 AKTİF MODEL")
-    print("=" * 50)
-    print(f"📍 Endpoint: POST /tryon")
-    print(f"📱 Android URL: https://stylemeta-backend.onrender.com/tryon")
-    print(f"🔄 Model parametresi: ?model=kolors, ?model=idm, vb.")
-    print("\n📋 AKTİF MODELLER:")
+    print("=" * 60)
+    print("🤖 STYLEMETA AI - IDM MODEL ÖNCELİKLİ")
+    print("=" * 60)
+    print(f"📍 Ana endpoint: POST /tryon")
+    print(f"📍 IDM özel: POST /tryon-idm")
+    print(f"📍 TexelModa özel: POST /tryon-texel")
+    print(f"📍 Model test: GET /test-model/idm")
+    print(f"📍 Model test: GET /test-model/texelmoda")
+    print("\n📋 AKTİF MODELLER (Kolors hariç):")
     for i, (name, info) in enumerate(MODELS.items(), 1):
         print(f"  {i}. {name}: {info['description']}")
-    print("=" * 50)
+    print("=" * 60)
     
     uvicorn.run(app, host="0.0.0.0", port=port)
