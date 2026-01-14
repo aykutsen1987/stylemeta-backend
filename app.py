@@ -19,7 +19,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
 
 # 🔥 GRADIO CLIENT
-client = Client("akhaliq/IDM-VTON")
+client = Client("yisol/IDM-VTON")
 
 @app.post("/tryon")
 async def try_on(
