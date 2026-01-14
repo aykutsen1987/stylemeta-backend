@@ -1,161 +1,162 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+import requests
 import os
 import uuid
+import shutil
+import base64
 import tempfile
-from PIL import Image, ImageDraw, ImageFont
-import io
 
-app = FastAPI()
+app = FastAPI(title="StyleMeta Backend")
 
-# ✅ CRITICAL: Android için CORS
+# ✅ CORS AYARLARI (Android için gerekli)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Tüm origin'lere izin ver
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_methods=["*"],   # Tüm method'lara izin ver
+    allow_headers=["*"],   # Tüm header'lara izin ver
 )
 
-# ✅ Android'den gelen multipart field isimleri
-# "person" ve "cloth" - KODUNUZLA BİREBİR AYNI!
-print("✅ Backend hazır: /tryon endpoint'i 'person' ve 'cloth' bekliyor")
+# ✅ UPLOAD KLASÖRLERİ
+UPLOAD_DIR = tempfile.gettempdir()  # Render'da geçici dizin kullan
+RESULT_DIR = os.path.join(UPLOAD_DIR, "results")
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+# ✅ TEST MODU (Hugging Face olmadan çalışsın)
+TEST_MODE = True  # Önce True yapın, çalışınca False yapın
 
 @app.get("/")
 def health():
-    return {"status": "StyleMeta backend çalışıyor", "endpoint": "/tryon"}
+    return {"status": "StyleMeta backend running", "endpoint": "/tryon"}
 
 @app.post("/tryon")
-async def try_on_endpoint(
-    person: UploadFile = File(..., description="Kullanıcı fotoğrafı"),
-    cloth: UploadFile = File(..., description="Elbise fotoğrafı")
+async def try_on(
+    person: UploadFile = File(...),
+    cloth: UploadFile = File(...)
 ):
-    """
-    Android'den gelen isteği işler
-    Field isimleri: "person" ve "cloth" (ApiService.kt ile aynı)
-    """
+    """Android'den gelen isteği işler - /tryon endpoint'i"""
     
-    print(f"📱 Android'den istek alındı!")
-    print(f"   - Person: {person.filename} ({person.content_type})")
-    print(f"   - Cloth: {cloth.filename} ({cloth.content_type})")
+    print(f"📱 Android'den istek geldi: person={person.filename}, cloth={cloth.filename}")
     
-    # Geçici dosya yolları
-    temp_dir = tempfile.gettempdir()
+    # Benzersiz dosya isimleri
     uid = str(uuid.uuid4())[:8]
-    
-    person_path = os.path.join(temp_dir, f"{uid}_person.jpg")
-    cloth_path = os.path.join(temp_dir, f"{uid}_cloth.jpg")
-    result_path = os.path.join(temp_dir, f"{uid}_result.jpg")
-    
+    person_path = os.path.join(UPLOAD_DIR, f"{uid}_person.jpg")
+    cloth_path = os.path.join(UPLOAD_DIR, f"{uid}_cloth.jpg")
+    result_path = os.path.join(RESULT_DIR, f"{uid}_result.jpg")
+
     try:
         # 1. DOSYALARI KAYDET
-        print(f"💾 Dosyalar kaydediliyor...")
+        print(f"💾 Dosyalar kaydediliyor: {person_path}")
         
-        # Person dosyasını kaydet
-        person_content = await person.read()
         with open(person_path, "wb") as f:
-            f.write(person_content)
-        print(f"   ✅ Person: {len(person_content)} bytes")
+            content = await person.read()
+            f.write(content)
+            print(f"✅ Person dosyası kaydedildi: {len(content)} bytes")
         
-        # Cloth dosyasını kaydet
-        cloth_content = await cloth.read()
         with open(cloth_path, "wb") as f:
-            f.write(cloth_content)
-        print(f"   ✅ Cloth: {len(cloth_content)} bytes")
+            content = await cloth.read()
+            f.write(content)
+            print(f"✅ Cloth dosyası kaydedildi: {len(content)} bytes")
+
+        # 2. TEST MODU: Hemen cevap dön
+        if TEST_MODE:
+            print("🧪 TEST MODU: Hugging Face'siz cevap dönülüyor")
+            
+            # Test görseli oluştur (basit bir JPEG)
+            from PIL import Image, ImageDraw
+            img = Image.new('RGB', (400, 600), color='lightblue')
+            d = ImageDraw.Draw(img)
+            d.text((100, 250), "TRY-ON TEST\nAndroid OK!", fill='black')
+            img.save(result_path, 'JPEG')
+            
+            print(f"✅ Test görseli oluşturuldu: {result_path}")
+            
+            return FileResponse(
+                result_path,
+                media_type="image/jpeg",
+                filename="tryon_result.jpg"
+            )
+
+        # 3. HUGGING FACE İSTEĞİ (TEST_MODE=False olduğunda)
+        print("🚀 Hugging Face'e istek gönderiliyor...")
         
-        # 2. TEST MODU: Hemen cevap dön (Android test için)
-        # Hugging Face'e bağlanmadan önce çalıştığını doğrula
+        # HF Space URL'si (token gerekebilir)
+        HF_SPACE_URL = "https://jjlealse-idm-vton.hf.space/run/predict"
+        HF_TOKEN = os.getenv("HF_TOKEN", "")
         
-        # Basit bir test görseli oluştur
-        img_width, img_height = 512, 768
+        headers = {}
+        if HF_TOKEN:
+            headers["Authorization"] = f"Bearer {HF_TOKEN}"
         
-        # Person resmini yükle (boyut kontrolü)
-        try:
-            person_img = Image.open(io.BytesIO(person_content))
-            p_width, p_height = person_img.size
-            print(f"   📐 Person boyutu: {p_width}x{p_height}")
-        except:
-            print("   ⚠️ Person resmi açılamadı")
-            person_img = None
+        # Resimleri base64'e çevir
+        def img_to_base64(path):
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode()
         
-        # Test görseli oluştur
-        result_img = Image.new('RGB', (img_width, img_height), color='#f0f8ff')
-        draw = ImageDraw.Draw(result_img)
+        payload = {
+            "data": [
+                f"data:image/jpeg;base64,{img_to_base64(person_path)}",
+                f"data:image/jpeg;base64,{img_to_base64(cloth_path)}"
+            ]
+        }
         
-        # Basit çizimler
-        draw.rectangle([50, 50, img_width-50, img_height-50], outline='blue', width=3)
-        
-        # Metinler
-        draw.text((img_width//2 - 100, 100), "STYLEMETA AI", fill='darkblue')
-        draw.text((img_width//2 - 150, 150), "Virtual Try-On Result", fill='green')
-        draw.text((img_width//2 - 200, 200), "Android Backend Bağlantısı BAŞARILI", fill='red')
-        
-        if person_img:
-            # Küçük thumbnail ekle
-            thumb = person_img.resize((100, 150))
-            result_img.paste(thumb, (50, 300))
-            draw.text((50, 460), "Kullanıcı", fill='black')
-        
-        draw.text((img_width//2 - 100, 500), f"ID: {uid}", fill='gray')
-        draw.text((50, 550), "Backend: stylemeta-backend.onrender.com", fill='darkgreen')
-        draw.text((50, 600), "Endpoint: /tryon", fill='darkgreen')
-        draw.text((50, 650), f"Files: {person.filename}, {cloth.filename}", fill='darkgreen')
-        
-        # Sonucu kaydet
-        result_img.save(result_path, 'JPEG', quality=95)
-        print(f"   ✅ Test görseli oluşturuldu: {result_path}")
-        
-        # 3. Android'e JPEG olarak dön
-        print(f"   📤 Android'e JPEG gönderiliyor...")
-        
-        return FileResponse(
-            result_path,
-            media_type="image/jpeg",
-            filename=f"tryon_result_{uid}.jpg",
-            headers={
-                "X-Android-Compatible": "true",
-                "X-Result-ID": uid
-            }
+        # HF'e istek gönder
+        response = requests.post(
+            HF_SPACE_URL,
+            json=payload,
+            headers=headers,
+            timeout=30
         )
         
+        if response.status_code != 200:
+            error_msg = f"HF Hatası: {response.status_code}"
+            print(f"❌ {error_msg}")
+            raise HTTPException(502, detail=error_msg)
+        
+        result = response.json()
+        
+        # Sonucu kaydet
+        if "data" in result and result["data"]:
+            img_data = result["data"][0]
+            if "," in img_data:
+                img_data = img_data.split(",")[1]
+            
+            with open(result_path, "wb") as f:
+                f.write(base64.b64decode(img_data))
+            
+            print(f"✅ HF'den sonuç alındı: {result_path}")
+            
+            return FileResponse(
+                result_path,
+                media_type="image/jpeg",
+                filename="tryon_result.jpg"
+            )
+        else:
+            raise HTTPException(503, detail="HF boş sonuç döndü")
+
     except Exception as e:
-        print(f"   ❌ HATA: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ HATA: {str(e)}")
         
-        # Hata durumunda hata görseli oluştur
-        error_img = Image.new('RGB', (400, 200), color='#ffcccc')
-        draw = ImageDraw.Draw(error_img)
-        draw.text((20, 50), "HATA OLUŞTU", fill='red')
-        draw.text((20, 100), str(e)[:50], fill='black')
-        error_img.save(result_path, 'JPEG')
-        
-        return FileResponse(
-            result_path,
-            media_type="image/jpeg",
-            filename="error_result.jpg"
+        # Hata durumunda JSON dön (Android'in anlaması için)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Backend hatası",
+                "message": str(e),
+                "android_note": "Uygulama bu mesajı görebilir"
+            }
         )
     
     finally:
-        # Temizlik
-        import time
-        time.sleep(1)  # Android'in dosyayı alması için bekle
-        
+        # Geçici dosyaları temizle
         for path in [person_path, cloth_path]:
             if os.path.exists(path):
-                try:
-                    os.remove(path)
-                    print(f"   🧹 Temizlendi: {os.path.basename(path)}")
-                except:
-                    pass
+                os.remove(path)
+                print(f"🧹 Temizlendi: {path}")
 
-# ✅ OPTIONS endpoint'i (CORS için gerekli)
-@app.options("/tryon")
-async def options_tryon():
-    return {"message": "CORS allowed"}
-
-# Render için port ayarı
+# ✅ Render'da çalışması için
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
