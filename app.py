@@ -48,9 +48,10 @@ async def try_on(
             shutil.copyfileobj(cloth.file, f)
 
         payload = {
-            "data": [
-                f"data:image/jpeg;base64,{image_to_base64(person_path)}",
-                f"data:image/jpeg;base64,{image_to_base64(cloth_path)}"
+        "data": [
+            f"data:image/jpeg;base64,{image_to_base64(person_path)}",
+            f"data:image/jpeg;base64,{image_to_base64(cloth_path)}",
+            "upper"
             ]
         }
 
