@@ -1,169 +1,163 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
 import uuid
 import shutil
 import base64
-import json
+import tempfile
 
 app = FastAPI(title="StyleMeta Backend")
 
+# ✅ CORS AYARLARI (Android için gerekli)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # Tüm origin'lere izin ver
+    allow_credentials=True,
+    allow_methods=["*"],   # Tüm method'lara izin ver
+    allow_headers=["*"],   # Tüm header'lara izin ver
 )
 
-UPLOAD_DIR = "uploads"
-RESULT_DIR = "results"
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ✅ UPLOAD KLASÖRLERİ
+UPLOAD_DIR = tempfile.gettempdir()  # Render'da geçici dizin kullan
+RESULT_DIR = os.path.join(UPLOAD_DIR, "results")
 os.makedirs(RESULT_DIR, exist_ok=True)
 
-# ✅ Çevre değişkeninden token al
-HF_TOKEN = os.getenv("HF_TOKEN")
-HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
-
-# ✅ İKİ ALTERNATİF MODEL (istediğinizi seçin veya geçiş yapın)
-MODELS = {
-    "idm": "https://jjlealse-idm-vton.hf.space/run/predict",  # IDM-VTON
-    "kolors": "https://kwai-kolors-kolors-virtual-try-on.hf.space/run/predict"  # Kolors
-}
-
-# ✅ Varsayılan model (değiştirebilirsiniz)
-CURRENT_MODEL = "idm"
-
-def image_to_base64(path: str) -> str:
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+# ✅ TEST MODU (Hugging Face olmadan çalışsın)
+TEST_MODE = True  # Önce True yapın, çalışınca False yapın
 
 @app.get("/")
 def health():
-    return {"status": "StyleMeta backend running"}
+    return {"status": "StyleMeta backend running", "endpoint": "/tryon"}
 
 @app.post("/tryon")
 async def try_on(
     person: UploadFile = File(...),
-    cloth: UploadFile = File(...),
-    model: str = CURRENT_MODEL  # ?model=idm veya ?model=kolors
+    cloth: UploadFile = File(...)
 ):
-    uid = str(uuid.uuid4())
-    person_path = f"{UPLOAD_DIR}/{uid}_person.jpg"
-    cloth_path = f"{UPLOAD_DIR}/{uid}_cloth.jpg"
-    result_path = f"{RESULT_DIR}/{uid}_result.jpg"
+    """Android'den gelen isteği işler - /tryon endpoint'i"""
+    
+    print(f"📱 Android'den istek geldi: person={person.filename}, cloth={cloth.filename}")
+    
+    # Benzersiz dosya isimleri
+    uid = str(uuid.uuid4())[:8]
+    person_path = os.path.join(UPLOAD_DIR, f"{uid}_person.jpg")
+    cloth_path = os.path.join(UPLOAD_DIR, f"{uid}_cloth.jpg")
+    result_path = os.path.join(RESULT_DIR, f"{uid}_result.jpg")
 
-    # Seçilen modeli kontrol et
-    if model not in MODELS:
-        model = CURRENT_MODEL
-    
-    hf_url = MODELS[model]
-    
     try:
-        # Dosyaları kaydet
+        # 1. DOSYALARI KAYDET
+        print(f"💾 Dosyalar kaydediliyor: {person_path}")
+        
         with open(person_path, "wb") as f:
-            shutil.copyfileobj(person.file, f)
+            content = await person.read()
+            f.write(content)
+            print(f"✅ Person dosyası kaydedildi: {len(content)} bytes")
+        
         with open(cloth_path, "wb") as f:
-            shutil.copyfileobj(cloth.file, f)
+            content = await cloth.read()
+            f.write(content)
+            print(f"✅ Cloth dosyası kaydedildi: {len(content)} bytes")
 
-        # ✅ MODEL'e GÖRE FARKLI PAYLOAD YAPILARI
-        if model == "idm":
-            # IDM-VTON payload (eski sürüm)
-            payload = {
-                "data": [
-                    f"data:image/jpeg;base64,{image_to_base64(person_path)}",
-                    f"data:image/jpeg;base64,{image_to_base64(cloth_path)}"
-                ]
-            }
-        else:  # kolors modeli
-            # Kolors-Virtual-Try-On payload
-            payload = {
-                "data": [
-                    {
-                        "data": f"data:image/jpeg;base64,{image_to_base64(person_path)}",
-                        "name": "person.jpg"
-                    },
-                    {
-                        "data": f"data:image/jpeg;base64,{image_to_base64(cloth_path)}",
-                        "name": "cloth.jpg"
-                    }
-                ]
-            }
+        # 2. TEST MODU: Hemen cevap dön
+        if TEST_MODE:
+            print("🧪 TEST MODU: Hugging Face'siz cevap dönülüyor")
+            
+            # Test görseli oluştur (basit bir JPEG)
+            from PIL import Image, ImageDraw
+            img = Image.new('RGB', (400, 600), color='lightblue')
+            d = ImageDraw.Draw(img)
+            d.text((100, 250), "TRY-ON TEST\nAndroid OK!", fill='black')
+            img.save(result_path, 'JPEG')
+            
+            print(f"✅ Test görseli oluşturuldu: {result_path}")
+            
+            return FileResponse(
+                result_path,
+                media_type="image/jpeg",
+                filename="tryon_result.jpg"
+            )
 
-        # HF Space'e istek gönder
+        # 3. HUGGING FACE İSTEĞİ (TEST_MODE=False olduğunda)
+        print("🚀 Hugging Face'e istek gönderiliyor...")
+        
+        # HF Space URL'si (token gerekebilir)
+        HF_SPACE_URL = "https://jjlealse-idm-vton.hf.space/run/predict"
+        HF_TOKEN = os.getenv("HF_TOKEN", "")
+        
+        headers = {}
+        if HF_TOKEN:
+            headers["Authorization"] = f"Bearer {HF_TOKEN}"
+        
+        # Resimleri base64'e çevir
+        def img_to_base64(path):
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode()
+        
+        payload = {
+            "data": [
+                f"data:image/jpeg;base64,{img_to_base64(person_path)}",
+                f"data:image/jpeg;base64,{img_to_base64(cloth_path)}"
+            ]
+        }
+        
+        # HF'e istek gönder
         response = requests.post(
-            hf_url,
+            HF_SPACE_URL,
             json=payload,
-            headers=HEADERS,
-            timeout=300
+            headers=headers,
+            timeout=30
         )
-
-        # Hata kontrolü
+        
         if response.status_code != 200:
-            error_detail = f"Model: {model}, Status: {response.status_code}, Error: {response.text[:200]}"
-            raise HTTPException(status_code=502, detail=error_detail)
-
+            error_msg = f"HF Hatası: {response.status_code}"
+            print(f"❌ {error_msg}")
+            raise HTTPException(502, detail=error_msg)
+        
         result = response.json()
         
-        # ✅ MODEL'e GÖRE FARKLI RESPONSE PARSING
-        if model == "idm":
-            # IDM-VTON response formatı
-            if "data" not in result or not result["data"]:
-                raise HTTPException(status_code=503, detail="Model boş sonuç döndü")
-            
-            img_base64 = result["data"][0]
-            if isinstance(img_base64, dict) and "data" in img_base64:
-                img_base64 = img_base64["data"]
-        else:  # kolors modeli
-            # Kolors response formatı
-            if "data" not in result or not result["data"]:
-                raise HTTPException(status_code=503, detail="Kolors model boş sonuç döndü")
-            
-            # Kolors genellikle base64 string döner
-            img_base64 = result["data"][0] if isinstance(result["data"], list) else result["data"]
-
-        # Base64'ten çıkar
-        if isinstance(img_base64, str) and "," in img_base64:
-            img_base64 = img_base64.split(",")[1]
-        
-        # Decode et
-        try:
-            img_bytes = base64.b64decode(img_base64)
-        except:
-            raise HTTPException(status_code=503, detail="Base64 decode hatası")
-
-        # Boş/küçük resim kontrolü
-        if len(img_bytes) < 1000:
-            raise HTTPException(status_code=503, detail="Model geçersiz resim döndü")
-
         # Sonucu kaydet
-        with open(result_path, "wb") as f:
-            f.write(img_bytes)
+        if "data" in result and result["data"]:
+            img_data = result["data"][0]
+            if "," in img_data:
+                img_data = img_data.split(",")[1]
+            
+            with open(result_path, "wb") as f:
+                f.write(base64.b64decode(img_data))
+            
+            print(f"✅ HF'den sonuç alındı: {result_path}")
+            
+            return FileResponse(
+                result_path,
+                media_type="image/jpeg",
+                filename="tryon_result.jpg"
+            )
+        else:
+            raise HTTPException(503, detail="HF boş sonuç döndü")
 
-        return FileResponse(
-            result_path,
-            media_type="image/jpeg",
-            filename=f"tryon_{model}_result.jpg"
-        )
-
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model {model} hatası: {str(e)}")
+        print(f"❌ HATA: {str(e)}")
+        
+        # Hata durumunda JSON dön (Android'in anlaması için)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Backend hatası",
+                "message": str(e),
+                "android_note": "Uygulama bu mesajı görebilir"
+            }
+        )
+    
     finally:
-        # Temizlik
+        # Geçici dosyaları temizle
         for path in [person_path, cloth_path]:
             if os.path.exists(path):
                 os.remove(path)
+                print(f"🧹 Temizlendi: {path}")
 
-# ✅ Model değiştirme endpoint'i
-@app.post("/switch-model")
-async def switch_model(new_model: str):
-    global CURRENT_MODEL
-    if new_model in MODELS:
-        CURRENT_MODEL = new_model
-        return {"message": f"Model {new_model} olarak değiştirildi", "current": CURRENT_MODEL}
-    else:
-        raise HTTPException(400, detail=f"Geçersiz model. Seçenekler: {list(MODELS.keys())}")
+# ✅ Render'da çalışması için
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
