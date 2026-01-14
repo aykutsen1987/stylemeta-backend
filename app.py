@@ -1,17 +1,16 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 import requests
 import os
 import uuid
 import base64
 import tempfile
-import io
+import json
 
-app = FastAPI(title="StyleMeta AI Backend")
+app = FastAPI()
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,23 +18,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ⭐ HUGGING FACE AYARLARI
-HF_SPACE_URL = "https://kwai-kolors-kolors-virtual-try-on.hf.space/run/predict"
-HF_TOKEN = os.getenv("HF_TOKEN", "")
-AI_ENABLED = True if HF_TOKEN else False  # Token varsa AI aktif
+# ⭐⭐ TOKEN'SİZ PUBLIC MODELLER ⭐⭐
+MODELS = {
+    "viton": {
+        "url": "https://viton-hd.hf.space/run/predict",
+        "needs_token": False,
+        "payload_type": "viton"
+    },
+    "oot": {
+        "url": "https://ootdiffusion.hf.space/run/predict",
+        "needs_token": False,
+        "payload_type": "simple"
+    },
+    "tryongan": {
+        "url": "https://tryongan.hf.space/run/predict",
+        "needs_token": False,
+        "payload_type": "simple"
+    }
+}
+
+# Varsayılan model (değiştirebilirsiniz)
+CURRENT_MODEL = "viton"
 
 @app.get("/")
 def health():
-    ai_status = "✅ AKTİF" if AI_ENABLED else "⚠️ TOKEN GEREKLİ"
+    model_info = MODELS[CURRENT_MODEL]
     return {
-        "status": "StyleMeta AI Backend",
-        "ai_enabled": ai_status,
-        "model": "Kolors-Virtual-Try-On",
+        "status": "StyleMeta AI - TOKEN'SİZ",
+        "current_model": CURRENT_MODEL,
+        "token_required": model_info["needs_token"],
+        "url": model_info["url"],
         "endpoint": "/tryon"
     }
 
 @app.post("/tryon")
-async def try_on(person: UploadFile = File(...), cloth: UploadFile = File(...)):
+async def try_on(
+    person: UploadFile = File(...),
+    cloth: UploadFile = File(...),
+    model: str = CURRENT_MODEL  # ?model=viton, ?model=oot, ?model=tryongan
+):
     uid = str(uuid.uuid4())[:8]
     temp_dir = tempfile.gettempdir()
     
@@ -44,7 +65,13 @@ async def try_on(person: UploadFile = File(...), cloth: UploadFile = File(...)):
     result_path = os.path.join(temp_dir, f"{uid}_result.jpg")
     
     try:
-        # 1. DOSYALARI KAYDET
+        # Model kontrolü
+        if model not in MODELS:
+            model = CURRENT_MODEL
+        
+        model_info = MODELS[model]
+        
+        # Dosyaları kaydet
         person_bytes = await person.read()
         cloth_bytes = await cloth.read()
         
@@ -53,119 +80,112 @@ async def try_on(person: UploadFile = File(...), cloth: UploadFile = File(...)):
         with open(cloth_path, "wb") as f:
             f.write(cloth_bytes)
         
-        print(f"📱 İstek: person={len(person_bytes)}B, cloth={len(cloth_bytes)}B")
+        print(f"📱 {model} modeli için istek: {len(person_bytes)}B, {len(cloth_bytes)}B")
         
-        # 2. AI AKTİF Mİ KONTROL ET
-        if not AI_ENABLED:
-            print("⚠️ AI pasif - test görseli dönülüyor")
-            return create_demo_image(
-                uid, result_path, 
-                person_size=len(person_bytes),
-                cloth_size=len(cloth_bytes),
-                ai_status="PASİF (HF_TOKEN gerekli)"
-            )
+        # Base64 hazırla
+        def to_base64(path):
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode('utf-8')
         
-        # 3. HUGGING FACE AI ÇAĞRISI
-        print(f"🚀 AI aktif - Hugging Face'e bağlanılıyor...")
+        person_base64 = to_base64(person_path)
+        cloth_base64 = to_base64(cloth_path)
         
-        try:
-            # Resimleri base64'e çevir
-            def img_to_base64(path):
-                with open(path, "rb") as f:
-                    return base64.b64encode(f.read()).decode('utf-8')
-            
-            # Kolors modeli için payload
+        # ⭐⭐ MODEL'E GÖRE PAYLOAD HAZIRLA ⭐⭐
+        if model_info["payload_type"] == "viton":
+            # VITON-HD için özel format
             payload = {
                 "data": [
-                    {
-                        "data": f"data:image/jpeg;base64,{img_to_base64(person_path)}",
-                        "name": "person.jpg"
-                    },
-                    {
-                        "data": f"data:image/jpeg;base64,{img_to_base64(cloth_path)}",
-                        "name": "cloth.jpg"
-                    }
+                    {"data": f"data:image/jpeg;base64,{person_base64}", "name": "person.jpg"},
+                    {"data": f"data:image/jpeg;base64,{cloth_base64}", "name": "cloth.jpg"},
+                    "vitonhd",  # Model tipi
+                    True,       # Background removal
+                    True        # Multi-pose
                 ]
             }
+        else:
+            # Diğer modeller için basit format
+            payload = {
+                "data": [
+                    f"data:image/jpeg;base64,{person_base64}",
+                    f"data:image/jpeg;base64,{cloth_base64}"
+                ]
+            }
+        
+        print(f"🚀 {model} modeline istek gönderiliyor (TOKEN'SİZ)...")
+        
+        # TOKEN'SİZ istek
+        response = requests.post(
+            model_info["url"],
+            json=payload,
+            timeout=180  # 3 dakika
+        )
+        
+        print(f"📡 Yanıt: {response.status_code}")
+        
+        # Başarılı ise
+        if response.status_code == 200:
+            result = response.json()
             
-            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            
-            # AI isteği (timeout uzun tut)
-            response = requests.post(
-                HF_SPACE_URL,
-                json=payload,
-                headers=headers,
-                timeout=300  # 5 dakika
-            )
-            
-            print(f"📡 AI Yanıt: {response.status_code}")
-            
-            # 4. BAŞARILI AI YANITI
-            if response.status_code == 200:
-                result = response.json()
+            if "data" in result and result["data"]:
+                img_data = result["data"]
                 
-                if "data" in result and result["data"]:
-                    img_data = result["data"]
+                # Farklı formatlar için
+                if isinstance(img_data, list):
+                    img_data = img_data[0]
+                
+                if isinstance(img_data, dict) and "data" in img_data:
+                    img_data = img_data["data"]
+                
+                if isinstance(img_data, str) and "," in img_data:
+                    img_data = img_data.split(",")[1]
+                
+                try:
+                    # AI SONUCU
+                    ai_bytes = base64.b64decode(img_data)
                     
-                    # Farklı formatlar için
-                    if isinstance(img_data, list):
-                        img_data = img_data[0]
-                    
-                    if "," in img_data:
-                        img_data = img_data.split(",")[1]
-                    
-                    # AI sonucunu kaydet
-                    ai_result_bytes = base64.b64decode(img_data)
+                    # Boş/küçük resim kontrolü
+                    if len(ai_bytes) < 5000:
+                        raise ValueError("AI çok küçük resim döndü")
                     
                     with open(result_path, "wb") as f:
-                        f.write(ai_result_bytes)
+                        f.write(ai_bytes)
                     
-                    print(f"🎉 AI BAŞARILI! {len(ai_result_bytes)} byte")
+                    print(f"🎉 {model} BAŞARILI! {len(ai_bytes):,} byte")
                     
-                    # Android'e AI sonucunu gönder
                     return FileResponse(
                         result_path,
                         media_type="image/jpeg",
-                        filename=f"stylemeta_ai_{uid}.jpg",
-                        headers={
-                            "X-AI-Generated": "true",
-                            "X-Model": "Kolors",
-                            "X-Request-ID": uid
-                        }
+                        filename=f"ai_{model}_{uid}.jpg"
                     )
-            
-            # 5. AI HATASI - demo görsele dön
-            print(f"❌ AI hatası: {response.status_code}")
-            return create_demo_image(
-                uid, result_path,
-                person_size=len(person_bytes),
-                cloth_size=len(cloth_bytes),
-                ai_status=f"AI HATASI ({response.status_code})"
-            )
-            
-        except requests.exceptions.Timeout:
-            print("⏰ AI timeout (5 dakika)")
-            return create_demo_image(
-                uid, result_path,
-                person_size=len(person_bytes),
-                cloth_size=len(cloth_bytes),
-                ai_status="AI TIMEOUT (çok uzun sürdü)"
-            )
-            
-        except Exception as ai_error:
-            print(f"💥 AI exception: {ai_error}")
-            return create_demo_image(
-                uid, result_path,
-                person_size=len(person_bytes),
-                cloth_size=len(cloth_bytes),
-                ai_status=f"AI HATASI: {str(ai_error)[:50]}"
-            )
-    
+                    
+                except Exception as decode_error:
+                    print(f"❌ Decode hatası: {decode_error}")
+                    # Fallback: demo görsel
+                    return create_demo_image(uid, result_path, model, "AI decode hatası")
+        
+        # Hata durumu
+        error_msg = f"HTTP {response.status_code}"
+        if response.text:
+            error_msg += f": {response.text[:100]}"
+        
+        print(f"❌ {model} hatası: {error_msg}")
+        
+        # Fallback görsel
+        return create_demo_image(
+            uid, result_path, model, 
+            f"Model hatası: {error_msg}",
+            person_size=len(person_bytes),
+            cloth_size=len(cloth_bytes)
+        )
+        
+    except requests.exceptions.Timeout:
+        print(f"⏰ {model} timeout")
+        return create_demo_image(uid, result_path, model, "Timeout (3 dakika)")
+        
     except Exception as e:
-        print(f"🔥 Genel hata: {e}")
-        # Acil durum görseli
-        return create_error_image(uid, temp_dir, str(e))
-    
+        print(f"💥 Genel hata: {e}")
+        return create_demo_image(uid, result_path, model, f"Hata: {str(e)[:50]}")
+        
     finally:
         # Temizlik
         for path in [person_path, cloth_path]:
@@ -175,60 +195,61 @@ async def try_on(person: UploadFile = File(...), cloth: UploadFile = File(...)):
                 except:
                     pass
 
-def create_demo_image(uid, result_path, person_size, cloth_size, ai_status="AKTİF"):
-    """AI olmadan da güzel demo görsel"""
-    img = Image.new('RGB', (600, 900), color=(245, 245, 250))
+def create_demo_image(uid, result_path, model_name, status, person_size=None, cloth_size=None):
+    """Demo/fallback görsel"""
+    img = Image.new('RGB', (600, 850), color=(255, 250, 245))
     d = ImageDraw.Draw(img)
     
     # Başlık
-    d.text((200, 30), "👗 STYLEMETA AI", fill=(255, 107, 129))
+    d.text((180, 30), "👗 STYLEMETA AI", fill=(255, 100, 100))
     
-    # İstek bilgileri
-    d.text((50, 100), "📊 İSTEK BİLGİLERİ:", fill=(0, 0, 0))
-    d.text((70, 140), f"İstek ID: {uid}", fill=(100, 100, 100))
-    d.text((70, 180), f"Kullanıcı: {person_size:,} byte", fill=(50, 50, 50))
-    d.text((70, 220), f"Elbise: {cloth_size:,} byte", fill=(50, 50, 50))
+    # Model bilgisi
+    d.text((50, 100), f"🤖 MODEL: {model_name.upper()}", fill=(100, 100, 255))
+    d.text((70, 140), f"Status: {status}", 
+           fill=(0, 180, 0) if "BAŞARILI" in status else (255, 100, 100))
+    d.text((70, 180), "Token: GEREKMEZ (Public Space)", fill=(0, 150, 0))
+    
+    if person_size and cloth_size:
+        d.text((50, 230), "📊 ALINAN DOSYALAR:", fill=(0, 0, 0))
+        d.text((70, 270), f"Kullanıcı: {person_size:,} byte", fill=(60, 60, 60))
+        d.text((70, 310), f"Elbise: {cloth_size:,} byte", fill=(60, 60, 60))
+    
+    # Bilgilendirme
+    d.text((50, 370), "✅ AVANTAJLAR:", fill=(0, 120, 0))
+    d.text((70, 410), "• Token gerekmez", fill=(0, 0, 0))
+    d.text((70, 450), "• Rate limit daha yüksek", fill=(0, 0, 0))
+    d.text((70, 490), "• Sürekli erişim", fill=(0, 0, 0))
+    
+    # Model değiştirme kılavuzu
+    d.text((50, 550), "🔄 MODEL DEĞİŞTİRMEK İÇİN:", fill=(150, 80, 0))
+    d.text((70, 590), "Android'de istek yaparken:", fill=(0, 0, 0))
+    d.text((90, 630), "URL'ye ?model=viton ekleyin", fill=(0, 100, 200))
+    d.text((90, 670), "veya ?model=oot", fill=(0, 100, 200))
+    
+    # İstek ID
+    d.text((50, 730), f"📍 İstek ID: {uid}", fill=(100, 100, 100))
     
     # Sistem durumu
-    d.text((50, 280), "✅ SİSTEM DURUMU:", fill=(0, 150, 0))
-    d.text((70, 320), "Backend: ÇALIŞIYOR", fill=(0, 150, 0))
-    d.text((70, 360), "Android: BAĞLANDI", fill=(0, 150, 0))
-    d.text((70, 400), f"AI: {ai_status}", 
-           fill=(0, 150, 0) if "AKTİF" in ai_status else (255, 100, 100))
+    d.rectangle([40, 780, 560, 830], fill=(230, 255, 230), outline=(0, 180, 0), width=2)
+    d.text((60, 800), "✨ Sistem aktif - Model test ediliyor", fill=(0, 120, 0))
     
-    # AI entegrasyon bilgisi
-    d.text((50, 460), "🤖 AI ENTEGRASYONU:", fill=(128, 0, 128))
-    d.text((70, 500), "Model: Kolors-Virtual-Try-On", fill=(0, 0, 0))
-    d.text((70, 540), "Platform: Hugging Face", fill=(0, 0, 0))
-    d.text((70, 580), f"Token: {'✅ VAR' if HF_TOKEN else '❌ EKSİK'}", fill=(0, 0, 0))
-    
-    # Yapılacaklar (AI pasifse)
-    if not HF_TOKEN or "HATASI" in ai_status:
-        d.text((50, 620), "🔧 YAPILACAKLAR:", fill=(200, 100, 0))
-        d.text((70, 660), "1. Hugging Face token al", fill=(0, 0, 0))
-        d.text((70, 700), "2. Render'da HF_TOKEN ekle", fill=(0, 0, 0))
-        d.text((70, 740), "3. Deploy'u yeniden başlat", fill=(0, 0, 0))
-    
-    # Sonuç
-    d.rectangle([40, 780, 560, 850], fill=(230, 245, 230), outline=(0, 180, 0), width=3)
-    d.text((60, 800), "✨ SİSTEM HAZIR!", fill=(0, 120, 0))
-    
-    img.save(result_path, 'JPEG', quality=95, optimize=True)
+    img.save(result_path, 'JPEG', quality=95)
     return FileResponse(result_path, media_type="image/jpeg")
 
-def create_error_image(uid, temp_dir, error_msg):
-    """Hata görseli"""
-    error_path = os.path.join(temp_dir, f"{uid}_error.jpg")
-    img = Image.new('RGB', (400, 300), color=(255, 230, 230))
-    d = ImageDraw.Draw(img)
-    d.text((20, 50), "⚠️  GEÇİCİ HATA", fill=(200, 0, 0))
-    d.text((20, 100), error_msg[:80], fill=(0, 0, 0))
-    d.text((20, 150), f"ID: {uid}", fill=(100, 100, 100))
-    img.save(error_path, 'JPEG')
-    return FileResponse(error_path, media_type="image/jpeg")
+# Model değiştirme endpoint'i
+@app.post("/switch-model/{model_name}")
+async def switch_model(model_name: str):
+    global CURRENT_MODEL
+    if model_name in MODELS:
+        CURRENT_MODEL = model_name
+        return {
+            "message": f"Model {model_name} olarak değiştirildi",
+            "model_info": MODELS[model_name]
+        }
+    return {"error": f"Geçersiz model. Seçenekler: {list(MODELS.keys())}"}
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
-    print(f"🚀 Server başlatılıyor... AI: {'AKTİF' if AI_ENABLED else 'PASİF'}")
+    print(f"🚀 Token'siz AI başlatılıyor. Model: {CURRENT_MODEL}")
     uvicorn.run(app, host="0.0.0.0", port=port)
