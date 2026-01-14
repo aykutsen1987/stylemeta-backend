@@ -22,19 +22,22 @@ RESULT_DIR = "results"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
 
-# ✅ PUBLIC HF SPACE (NO TOKEN)
-HF_SPACE_URL = "https://cuuupid-idm-vton-lite.hf.space/run/predict"
+# ✅ Ortam değişkeninden token'ı al
+HF_TOKEN = os.getenv("HF_TOKEN")
 
+# ✅ Token varsa headers'a ekle
+HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+
+# ✅ HF Space URL'si (cuuupid-idm-vton-lite modeli için doğru mu kontrol edin)
+HF_SPACE_URL = "https://cuuupid-idm-vton-lite.hf.space/run/predict"
 
 def image_to_base64(path: str) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
-
 @app.get("/")
 def health():
     return {"status": "StyleMeta backend running"}
-
 
 @app.post("/tryon")
 async def try_on(
@@ -47,9 +50,9 @@ async def try_on(
     result_path = f"{RESULT_DIR}/{uid}_result.jpg"
 
     try:
+        # Dosyaları kaydet
         with open(person_path, "wb") as f:
             shutil.copyfileobj(person.file, f)
-
         with open(cloth_path, "wb") as f:
             shutil.copyfileobj(cloth.file, f)
 
@@ -60,16 +63,18 @@ async def try_on(
             ]
         }
 
+        # ✅ Token ile istek gönder
         response = requests.post(
             HF_SPACE_URL,
             json=payload,
+            headers=HEADERS,
             timeout=300
         )
 
         if response.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail=f"HF error: {response.text}"
+                detail=f"HF error: {response.text[:200]}"
             )
 
         result = response.json()
@@ -89,7 +94,7 @@ async def try_on(
         if len(img_bytes) < 1000:
             raise HTTPException(
                 status_code=503,
-                detail="HF returned invalid image (black or empty)"
+                detail="HF returned invalid image"
             )
 
         with open(result_path, "wb") as f:
@@ -103,9 +108,8 @@ async def try_on(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
-        if os.path.exists(person_path):
-            os.remove(person_path)
-        if os.path.exists(cloth_path):
-            os.remove(cloth_path)
+        # Geçici dosyaları temizle
+        for path in [person_path, cloth_path]:
+            if os.path.exists(path):
+                os.remove(path)
