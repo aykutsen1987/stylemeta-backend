@@ -6,8 +6,6 @@ import os
 import uuid
 import tempfile
 import shutil
-import cv2
-import numpy as np
 
 app = FastAPI()
 
@@ -18,20 +16,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MediaPipe'ı tamamen korumalı yükle
-try:
-    import mediapipe as mp
-    mp_pose = mp.solutions.pose
-    pose_tracker = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5)
-    MP_AVAILABLE = True
-    print("✅ MediaPipe Pose Sistemi Aktif")
-except Exception as e:
-    MP_AVAILABLE = False
-    print(f"⚠️ MediaPipe Yüklenemedi (Sadece AI Giydirme Çalışacak): {e}")
+# MediaPipe hatasını tamamen bypass etmek için Adım 2'yi 
+# şimdilik sadece fonksiyon olarak tanımlıyoruz, içeriği boş bırakıyoruz
+def analyze_pose_v2(image_path):
+    print("📊 Pose analizi şu an bypass edildi, AI modeline geçiliyor.")
+    return None
 
 @app.get("/")
 def read_root():
-    return {"status": "StyleMeta API is Live", "mp_active": MP_AVAILABLE}
+    return {"status": "StyleMeta API is Live", "model": "Nymbo-VTON"}
 
 @app.post("/tryon")
 async def try_on_proxy(person: UploadFile = File(...), cloth: UploadFile = File(...)):
@@ -40,25 +33,14 @@ async def try_on_proxy(person: UploadFile = File(...), cloth: UploadFile = File(
     c_path = os.path.join(temp_dir, f"c_{uuid.uuid4()}.jpg")
     
     try:
-        # 1. Dosya Kaydetme
         with open(p_path, "wb") as f: f.write(await person.read())
         with open(c_path, "wb") as f: f.write(await cloth.read())
 
-        # 2. MediaPipe Analizi (Adım 2)
-        if MP_AVAILABLE:
-            try:
-                img = cv2.imread(p_path)
-                results = pose_tracker.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                if results.pose_landmarks:
-                    print("✅ Gövde analizi başarılı.")
-            except:
-                print("⚠️ Pose analizi sırasında hata.")
-
-        # 3. AI Model İsteyi (Adım 1)
-        print("🚀 AI Modeline istek gönderiliyor...")
-        client = Client("yisol/IDM-VTON")
+        # ADIM 1: ÇALIŞAN MODEL (Şu an aktif olan bir başkasını deniyoruz)
+        # IDM-VTON çöktüğü için alternatif:
+        print("🚀 Alternatif AI Modeline (Nymbo) bağlanılıyor...")
+        client = Client("Nymbo/Virtual-Try-On") # Bu model genelde daha stabildir
         
-        # IDM-VTON parametre yapısı
         result = client.predict(
             dict={"background": handle_file(p_path), "layers": [], "composite": None},
             garm_img=handle_file(c_path),
@@ -77,9 +59,10 @@ async def try_on_proxy(person: UploadFile = File(...), cloth: UploadFile = File(
         return FileResponse(output_file, media_type="image/jpeg")
 
     except Exception as e:
-        print(f"❌ KRİTİK HATA: {str(e)}")
-        # Hatayı Android'e gönder
-        raise HTTPException(status_code=500, detail=f"Backend Hatası: {str(e)}")
-    finally:
-        # Temizlik işlemleri burada yapılabilir
-        pass
+        print(f"❌ HATA: {str(e)}")
+        # Eğer bu model de hata verirse Android'e bilgi gönder
+        raise HTTPException(status_code=500, detail=f"Model hatası veya meşgul: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
