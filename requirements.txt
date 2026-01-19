@@ -1,5 +1,9 @@
 fastapi
 uvicorn
+python-multipart
+gradio_client
+requests
+pillow
 opencv-python-headless
-numpy<2
+numpy<2.0.0
 mediapipe==0.10.11
