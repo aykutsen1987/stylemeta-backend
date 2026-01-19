@@ -16,15 +16,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MediaPipe hatasını tamamen bypass etmek için Adım 2'yi 
-# şimdilik sadece fonksiyon olarak tanımlıyoruz, içeriği boş bırakıyoruz
-def analyze_pose_v2(image_path):
-    print("📊 Pose analizi şu an bypass edildi, AI modeline geçiliyor.")
-    return None
+# DENENECEK MODELLER (Sırasıyla)
+MODEL_POOL = [
+    {"name": "Nymbo", "src": "Nymbo/Virtual-Try-On", "api": "/tryon"},
+    {"name": "IDM-VTON", "src": "yisol/IDM-VTON", "api": "/tryon"},
+    {"name": "Kolors-Alt", "src": "Kwai-Kolors/Kolors-Virtual-Try-On", "api": "/predict"}
+]
 
 @app.get("/")
 def read_root():
-    return {"status": "StyleMeta API is Live", "model": "Nymbo-VTON"}
+    return {"status": "StyleMeta API is Live", "msg": "Send POST to /tryon"}
 
 @app.post("/tryon")
 async def try_on_proxy(person: UploadFile = File(...), cloth: UploadFile = File(...)):
@@ -36,33 +37,41 @@ async def try_on_proxy(person: UploadFile = File(...), cloth: UploadFile = File(
         with open(p_path, "wb") as f: f.write(await person.read())
         with open(c_path, "wb") as f: f.write(await cloth.read())
 
-        # ADIM 1: ÇALIŞAN MODEL (Şu an aktif olan bir başkasını deniyoruz)
-        # IDM-VTON çöktüğü için alternatif:
-        print("🚀 Alternatif AI Modeline (Nymbo) bağlanılıyor...")
-        client = Client("Nymbo/Virtual-Try-On") # Bu model genelde daha stabildir
+        last_error = ""
         
-        result = client.predict(
-            dict={"background": handle_file(p_path), "layers": [], "composite": None},
-            garm_img=handle_file(c_path),
-            garment_des="garment",
-            is_checked=True,
-            is_auto_mask=True,
-            denoise_steps=30,
-            seed=42,
-            api_name="/tryon"
-        )
+        for model in MODEL_POOL:
+            try:
+                print(f"🚀 {model['name']} modeli deneniyor...")
+                client = Client(model["src"])
+                
+                # Model tipine göre parametre ayarı
+                if "Kolors" in model["name"]:
+                    result = client.predict(
+                        handle_file(p_path), handle_file(c_path), 
+                        True, False, 30, 42, api_name=model["api"]
+                    )
+                else:
+                    result = client.predict(
+                        dict={"background": handle_file(p_path), "layers": [], "composite": None},
+                        garm_img=handle_file(c_path),
+                        garment_des="garment", is_checked=True, is_auto_mask=True,
+                        denoise_steps=30, seed=42, api_name=model["api"]
+                    )
 
-        final_image = result[0] if isinstance(result, (list, tuple)) else result
-        output_file = os.path.join(temp_dir, "result.jpg")
-        shutil.copy(final_image, output_file)
-        
-        return FileResponse(output_file, media_type="image/jpeg")
+                final_image = result[0] if isinstance(result, (list, tuple)) else result
+                output_file = os.path.join(temp_dir, "result.jpg")
+                shutil.copy(final_image, output_file)
+                
+                print(f"✅ {model['name']} ile başarıyla sonuç üretildi.")
+                return FileResponse(output_file, media_type="image/jpeg")
+
+            except Exception as e:
+                last_error = str(e)
+                print(f"⚠️ {model['name']} başarısız: {last_error}")
+                continue # Bir sonraki modele geç
+
+        # Eğer hiçbir model çalışmadıysa
+        raise Exception(f"Tüm modeller şu an meşgul veya hatalı. Son hata: {last_error}")
 
     except Exception as e:
-        print(f"❌ HATA: {str(e)}")
-        # Eğer bu model de hata verirse Android'e bilgi gönder
-        raise HTTPException(status_code=500, detail=f"Model hatası veya meşgul: {str(e)}")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+        raise HTTPException(status_code=503, detail=str(e))
