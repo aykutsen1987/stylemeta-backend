@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os, uuid, shutil
-from pose_utils import detect_pose
+from tryon_utils import simple_tryon
 
 app = FastAPI()
 
@@ -13,22 +14,24 @@ app.add_middleware(
 )
 
 UPLOAD_DIR = "uploads"
+RESULT_DIR = "results"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 @app.post("/tryon")
 async def tryon(person: UploadFile = File(...), cloth: UploadFile = File(...)):
     uid = str(uuid.uuid4())
+
     person_path = f"{UPLOAD_DIR}/{uid}_person.jpg"
+    cloth_path = f"{UPLOAD_DIR}/{uid}_cloth.png"
+    result_path = f"{RESULT_DIR}/{uid}_result.jpg"
 
     with open(person_path, "wb") as f:
         shutil.copyfileobj(person.file, f)
 
-    pose = detect_pose(person_path)
+    with open(cloth_path, "wb") as f:
+        shutil.copyfileobj(cloth.file, f)
 
-    if pose is None:
-        raise HTTPException(status_code=400, detail="Pose tespit edilemedi")
+    simple_tryon(person_path, cloth_path, result_path)
 
-    return {
-        "status": "pose_detected",
-        "pose": pose
-    }
+    return FileResponse(result_path, media_type="image/jpeg")
