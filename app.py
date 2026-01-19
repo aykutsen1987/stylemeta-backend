@@ -1,63 +1,78 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import Response
-from PIL import Image
-import numpy as np
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 import cv2
-import io
+import numpy as np
+import mediapipe as mp
+import os
+import uuid
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+UPLOAD_DIR = "uploads"
+RESULT_DIR = "results"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+mp_selfie = mp.solutions.selfie_segmentation
+segmenter = mp_selfie.SelfieSegmentation(model_selection=1)
+
 @app.post("/tryon")
-async def try_on(
+async def tryon(
     person: UploadFile = File(...),
     cloth: UploadFile = File(...)
 ):
-    # Fotoğrafları oku
-    person_img = Image.open(io.BytesIO(await person.read())).convert("RGB")
-    cloth_img = Image.open(io.BytesIO(await cloth.read())).convert("RGBA")
+    uid = str(uuid.uuid4())
 
-    person_np = np.array(person_img)
-    h, w, _ = person_np.shape
+    person_path = f"{UPLOAD_DIR}/{uid}_person.jpg"
+    cloth_path = f"{UPLOAD_DIR}/{uid}_cloth.png"
+    result_path = f"{RESULT_DIR}/{uid}_result.jpg"
 
-    # 🎯 Tahmini gövde alanı
-    torso_top = int(h * 0.25)
-    torso_bottom = int(h * 0.65)
-    torso_left = int(w * 0.25)
-    torso_right = int(w * 0.75)
+    with open(person_path, "wb") as f:
+        f.write(await person.read())
 
-    torso_width = torso_right - torso_left
-    torso_height = torso_bottom - torso_top
+    with open(cloth_path, "wb") as f:
+        f.write(await cloth.read())
 
-    # 👕 Kıyafeti ölçekle
-    cloth_resized = cloth_img.resize(
-        (torso_width, torso_height),
-        Image.LANCZOS
+    # Görselleri oku
+    person_img = cv2.imread(person_path)
+    cloth_img = cv2.imread(cloth_path, cv2.IMREAD_UNCHANGED)
+
+    person_rgb = cv2.cvtColor(person_img, cv2.COLOR_BGR2RGB)
+    result = segmenter.process(person_rgb)
+
+    mask = result.segmentation_mask > 0.6
+    mask = mask.astype(np.uint8) * 255
+
+    mask_3c = cv2.merge([mask, mask, mask])
+
+    # Elbiseyi insan boyutuna getir
+    cloth_resized = cv2.resize(
+        cloth_img,
+        (person_img.shape[1], person_img.shape[0])
     )
 
-    # RGBA → BGR + Alpha
-    cloth_np = np.array(cloth_resized)
-    alpha = cloth_np[:, :, 3] / 255.0
-
-    for c in range(3):
-        person_np[
-            torso_top:torso_bottom,
-            torso_left:torso_right,
-            c
-        ] = (
-            alpha * cloth_np[:, :, c]
-            + (1 - alpha) * person_np[
-                torso_top:torso_bottom,
-                torso_left:torso_right,
-                c
-            ]
+    if cloth_resized.shape[2] == 4:
+        alpha = cloth_resized[:, :, 3] / 255.0
+        for c in range(3):
+            person_img[:, :, c] = (
+                alpha * cloth_resized[:, :, c] +
+                (1 - alpha) * person_img[:, :, c]
+            )
+    else:
+        person_img = np.where(
+            mask_3c == 255,
+            cloth_resized[:, :, :3],
+            person_img
         )
 
-    # Sonuç
-    result_img = Image.fromarray(person_np)
-    buf = io.BytesIO()
-    result_img.save(buf, format="JPEG")
+    cv2.imwrite(result_path, person_img)
 
-    return Response(
-        content=buf.getvalue(),
-        media_type="image/jpeg"
-    )
+    return FileResponse(result_path, media_type="image/jpeg")
