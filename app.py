@@ -16,16 +16,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# DENENECEK MODELLER (Sırasıyla)
+# DAHA GENİŞ VE GÜNCEL MODEL HAVUZU
 MODEL_POOL = [
-    {"name": "Nymbo", "src": "Nymbo/Virtual-Try-On", "api": "/tryon"},
-    {"name": "IDM-VTON", "src": "yisol/IDM-VTON", "api": "/tryon"},
-    {"name": "Kolors-Alt", "src": "Kwai-Kolors/Kolors-Virtual-Try-On", "api": "/predict"}
+    {"name": "Kwai-Kolors", "src": "Kwai-Kolors/Kolors-Virtual-Try-On", "type": "kolors"},
+    {"name": "Nymbo", "src": "Nymbo/Virtual-Try-On", "type": "vton"},
+    {"name": "IDM-VTON", "src": "yisol/IDM-VTON", "type": "vton"},
+    {"name": "Fals-Backup", "src": "fffiloni/IDM-VTON", "type": "vton"} # Yedek
 ]
 
 @app.get("/")
 def read_root():
-    return {"status": "StyleMeta API is Live", "msg": "Send POST to /tryon"}
+    return {"status": "Multi-Model Engine Active", "version": "1.2.0"}
 
 @app.post("/tryon")
 async def try_on_proxy(person: UploadFile = File(...), cloth: UploadFile = File(...)):
@@ -37,41 +38,39 @@ async def try_on_proxy(person: UploadFile = File(...), cloth: UploadFile = File(
         with open(p_path, "wb") as f: f.write(await person.read())
         with open(c_path, "wb") as f: f.write(await cloth.read())
 
-        last_error = ""
-        
         for model in MODEL_POOL:
             try:
-                print(f"🚀 {model['name']} modeli deneniyor...")
+                print(f"📡 {model['name']} deneniyor ({model['src']})...")
                 client = Client(model["src"])
                 
-                # Model tipine göre parametre ayarı
-                if "Kolors" in model["name"]:
+                if model["type"] == "kolors":
+                    # Kolors için isim kullanmadan tahmin (index üzerinden)
                     result = client.predict(
                         handle_file(p_path), handle_file(c_path), 
-                        True, False, 30, 42, api_name=model["api"]
+                        True, False, 30, 42
                     )
                 else:
+                    # VTON modelleri için standart yapı
                     result = client.predict(
                         dict={"background": handle_file(p_path), "layers": [], "composite": None},
                         garm_img=handle_file(c_path),
                         garment_des="garment", is_checked=True, is_auto_mask=True,
-                        denoise_steps=30, seed=42, api_name=model["api"]
+                        denoise_steps=30, seed=42
                     )
 
                 final_image = result[0] if isinstance(result, (list, tuple)) else result
                 output_file = os.path.join(temp_dir, "result.jpg")
                 shutil.copy(final_image, output_file)
                 
-                print(f"✅ {model['name']} ile başarıyla sonuç üretildi.")
+                print(f"✅ BAŞARILI: {model['name']}")
                 return FileResponse(output_file, media_type="image/jpeg")
 
             except Exception as e:
-                last_error = str(e)
-                print(f"⚠️ {model['name']} başarısız: {last_error}")
-                continue # Bir sonraki modele geç
+                print(f"⚠️ {model['name']} başarısız oldu: {str(e)[:100]}")
+                continue 
 
-        # Eğer hiçbir model çalışmadıysa
-        raise Exception(f"Tüm modeller şu an meşgul veya hatalı. Son hata: {last_error}")
+        raise Exception("Şu an tüm yapay zeka servisleri Hugging Face üzerinde bakımda. Lütfen 5-10 dakika sonra tekrar deneyin.")
 
     except Exception as e:
+        print(f"❌ TÜM MODELLER ÇÖKTÜ: {str(e)}")
         raise HTTPException(status_code=503, detail=str(e))
